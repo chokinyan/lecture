@@ -1,66 +1,95 @@
 import requests
 from bs4 import BeautifulSoup
 import sqlite3
+import signal
+import bs4
 
-chap : dict[int,list[str]] = {}
-indexChap : int = 0
+class Chapitre:
+    def __init__(self,chap : str,url: str) -> None:
+        self.info = [chap,url]
 
-
+chap : list[Chapitre] = []
 nomSerie : str = "kumo-desu-ga-nani-ka"
 dbNomSerie  : str= nomSerie.replace('-','_')
-url  : str = f'https://kisswood.eu/category/traductions/{nomSerie}/page/1'
-
-
-
+BasedUrl  : str = f'https://kisswood.eu/category/traductions/{nomSerie}/page/'
 connexion  : sqlite3.Connection = sqlite3.connect('lnList.db')
 cursor : sqlite3.Cursor = connexion.cursor()
+ProgramEnd = False
 
-cursor.execute(f"""SELECT name FROM sqlite_master WHERE type='table' AND name='{dbNomSerie}';""")
+def ForceEnd(sig,frame):
+    global ProgramEnd
+    ProgramEnd = True
+    exit(0)
 
-if cursor.fetchall() == []:
-    cursor.execute(f"""CREATE TABLE {dbNomSerie}(id INT PRIMARY KEY,cahpitre VARCHAR(255),url VARCHAR(255),lue BOOL)""")
+signal.signal(signal.SIGINT,ForceEnd)
 
-def listeChap(url : str) -> None:
-    global chap,indexChap
-    newUrl : str = ""
+def GetChaptOnPage(url : str) -> str:
+    try:
+        rep = requests.get(url)
+        soup = BeautifulSoup(rep.text,'html.parser')
+        title : bs4.element.ResultSet = soup.findAll("h1")
+        for i in title:
+            if(i.text.find("Chapitre") != 1 or i.text.find("chapitre") != 1):
+                return i.text.split(' ')[-1]
+    except:
+        print("erreur")
+        return GetChaptOnPage(url)
+
+def ChapGet(url : str) -> None:
+    global chap,ProgramEnd
+    if(ProgramEnd):
+        exit(1)
     try:
         rep : requests.Response = requests.get(url)
         if rep.status_code == 200:
             soup : BeautifulSoup = BeautifulSoup(rep.text,'html.parser')
-            text = soup.findAll('article')
+            text : bs4.element.ResultSet = soup.findAll('article')
             for i in text:
                 if(i.text.find('Chapitre') != -1 or i.text.find('chapitre') != -1):
-                    chaplink  : str = i.find('a')['href'][:-1]
-                    chap[indexChap] = [chaplink[chaplink.find('chapitre')+9:].replace('-','.'),chaplink]
-                    indexChap += 1
+                    chapLink : str= i.find('a')['href'][:-1]
                     
-            UrlSplited : list[str] = url.split('/')
-            UrlSplited[-1] = str(eval(f'{UrlSplited[-1]} + 1'))
-            for i in range(UrlSplited.__len__()):
-                if(i == 0):
-                    newUrl += UrlSplited[i]
-                elif(i == 1):
-                    newUrl += '//'
-                elif(i == UrlSplited.__len__() - 1):
-                    newUrl += UrlSplited[i]
-                else:
-                    newUrl += UrlSplited[i] + '/'
-            return listeChap(newUrl,indexChap)
-                    
-        else:
-            return None
-                        
+                    if((lastChap != []) and (chapLink == lastChap[0][0])):
+                        print("chapter update")
+                        return None        
+                    else:
+                        if(chapLink.find('chapitre') == -1):
+                            chap.append(Chapitre(GetChaptOnPage(chapLink),chapLink))
+                        else:
+                            chap.append(Chapitre(chapLink[chapLink.find('chapitre')+9:].replace('-','.'),chapLink))
+            
+            newIndex = str(eval(f"{url.split('/')[-1]}+1"))
+            ChapGet(BasedUrl+newIndex)
+            
+        return None
+    
     except:
-        listeChap(url)
+        print("Erreur")
+        ChapGet(url)
 
-listeChap(url)
+cursor.execute(f"""SELECT name FROM sqlite_master WHERE type='table' AND name='{dbNomSerie}'""")
 
-print("finish get url and chap")
-print("\n------------------------------------------------\n")
-
-for i in range(chap.__len__()-1,-1,-1):
-    print(i)
-    cursor.execute(f"""INSERT INTO {dbNomSerie} VALUES(?,?,?,?)""",[None]+chap[i]+[False])
+if cursor.fetchall() == []:
+    cursor.execute(f"""CREATE TABLE {dbNomSerie}(cahpitre VARCHAR(255),url VARCHAR(255),lue BOOL)""")
     connexion.commit()
+    lastChap = cursor.execute(f"""SELECT url FROM {dbNomSerie} ORDER BY rowid DESC LIMIT 1""").fetchall()
+    ChapGet(url=BasedUrl+"1")
+elif(cursor.execute(f"""SELECT COUNT(rowid) FROM {dbNomSerie}""").fetchone()[0] != 0):
+    print("table already filled,checking for new chapter")
+    lastChap = cursor.execute(f"""SELECT url FROM {dbNomSerie} ORDER BY rowid DESC LIMIT 1""").fetchall()
+    ChapGet(url=BasedUrl+"1")
+else:
+    lastChap = cursor.execute(f"""SELECT url FROM {dbNomSerie} ORDER BY rowid DESC LIMIT 1""").fetchall()
+    ChapGet(url=BasedUrl+"1")
+
+chap.reverse()
+
+for i in chap:
+    print(f"Chapter {i.info[0]} add")
+    cursor.execute(f""" INSERT INTO {dbNomSerie} VALUES(?,?,?) """,i.info+[False])
+    connexion.commit()
+
+
+cursor.execute(f""" SELECT MAX(rowid) FROM {dbNomSerie} """)
+print(cursor.fetchall())
 
 connexion.close()
